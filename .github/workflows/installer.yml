@@ -1,0 +1,58 @@
+name: Verify Windows installer
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to validate
+        required: true
+        default: v1.4.1
+permissions:
+  contents: read
+jobs:
+  install:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - name: Download draft installer and verify checksum
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --pattern '*-x64.exe' --pattern SHA256SUMS.txt --dir package
+          if ($LASTEXITCODE -ne 0) { throw 'Release download failed' }
+          $exe = Get-ChildItem package -Filter '*-x64.exe' | Select-Object -First 1
+          $line = Get-Content package/SHA256SUMS.txt | Where-Object { $_.EndsWith($exe.Name) }
+          $actual = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower()
+          if (-not $line.StartsWith($actual)) { throw 'Installer SHA256 mismatch' }
+          "Installer: $($exe.Name)`nSHA256: $actual" | Set-Content installer-validation.txt
+      - name: Install and run installed Windows binaries
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem package -Filter '*-x64.exe' | Select-Object -First 1
+          $dest = Join-Path $env:LOCALAPPDATA 'Programs\ClipKeep-Release-Check'
+          $p = Start-Process $exe.FullName -ArgumentList @('/S', "/D=$dest") -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Installer failed: $($p.ExitCode)" }
+          foreach ($file in @('ClipKeep.exe','resources\app.asar','resources\app-update.yml','resources\bin\ffmpeg.exe','resources\bin\ffprobe.exe')) {
+            if (-not (Test-Path (Join-Path $dest $file))) { throw "Missing installed file: $file" }
+          }
+          $version = (Get-Item "$dest\ClipKeep.exe").VersionInfo.ProductVersion
+          if ($version -ne '1.4.1.0') { throw "Wrong application version: $version" }
+          & "$dest\resources\bin\ffmpeg.exe" -v error -f lavfi -i 'testsrc2=s=160x90:r=24' -t 1 -c:v libx264 -y "$env:TEMP\clipkeep-install-test.mp4"
+          if ($LASTEXITCODE -ne 0) { throw 'Installed FFmpeg could not encode' }
+          & "$dest\resources\bin\ffprobe.exe" -v error -show_streams -of json "$env:TEMP\clipkeep-install-test.mp4" | Set-Content installed-probe.json
+          if ($LASTEXITCODE -ne 0) { throw 'Installed FFprobe could not read output' }
+          $env:ELECTRON_RUN_AS_NODE = '1'
+          & "$dest\ClipKeep.exe" -e 'console.log(process.versions.electron)' | Set-Content electron-version.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Installed Electron executable failed' }
+          Remove-Item Env:ELECTRON_RUN_AS_NODE
+          "Silent installation, expected installed files, application version $version, installed FFmpeg/FFprobe and Electron CLI: passed. Desktop UI and real-user upgrade not tested." | Add-Content installer-validation.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: windows-installer-validation
+          path: |
+            installer-validation.txt
+            installed-probe.json
+            electron-version.txt
+          retention-days: 30

@@ -28,7 +28,7 @@ git -C build/zimg submodule status >> "$OUT/corresponding-source/REVISIONS.txt"
 checkout_source zlib https://github.com/madler/zlib.git 51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf
 # The pinned dav1d revision below is resolved from the upstream 1.5.2 release.
 checkout_source dav1d https://code.videolan.org/videolan/dav1d.git c720f4d3556a01916324aea155555d3efba842e8
-# Archive pristine sources, including graphengine, before generating configure/build output.
+# Archive pristine sources, including any initialized submodules, before generating configure/build output.
 for name in ffmpeg x264 zimg zlib dav1d; do
   tar --exclude=.git -cJf "$OUT/corresponding-source/$name.tar.xz" -C build "$name"
 done
@@ -40,7 +40,7 @@ cp build/x264/COPYING "$OUT/licenses/x264-COPYING.txt"
 cp build/zimg/COPYING "$OUT/licenses/zimg-COPYING.txt"
 cp build/zlib/LICENSE "$OUT/licenses/zlib-LICENSE.txt"
 cp build/dav1d/COPYING "$OUT/licenses/dav1d-COPYING.txt"
-for lib in gcc-libs winpthreads; do
+for lib in gcc libgcc gcc-libs crt headers winpthreads; do
   if test -d "/mingw64/share/licenses/$lib"; then cp -r "/mingw64/share/licenses/$lib" "$OUT/licenses/"; fi
 done
 (cd build/zlib && make -f win32/Makefile.gcc -j"$JOBS" libz.a)
