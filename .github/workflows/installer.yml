@@ -7,7 +7,9 @@ on:
         required: true
         default: v1.4.1
 permissions:
-  contents: read
+  # GitHub only exposes draft release assets to tokens with push access.
+  # This workflow only downloads; it never publishes or modifies a release.
+  contents: write
 jobs:
   install:
     runs-on: windows-2022
