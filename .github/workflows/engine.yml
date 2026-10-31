@@ -1,0 +1,39 @@
+name: Build Windows video engine with corresponding source
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git make autoconf automake libtool diffutils tar
+            mingw-w64-x86_64-gcc mingw-w64-x86_64-nasm
+            mingw-w64-x86_64-pkgconf mingw-w64-x86_64-meson
+            mingw-w64-x86_64-ninja
+      - name: Build pinned upstream sources and test on Windows
+        shell: msys2 {0}
+        run: bash engine/build.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: clipkeep-engine-windows
+          path: engine-output/
+          retention-days: 30
+          compression-level: 0
+      - name: Preserve build diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: engine-build-diagnostics
+          path: |
+            build/**/config.log
+            build/**/ffbuild/config.log
+            build/**/meson-logs/meson-log.txt
+          retention-days: 7
