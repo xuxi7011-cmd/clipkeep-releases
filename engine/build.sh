@@ -23,7 +23,7 @@ checkout_source() {
 checkout_source ffmpeg https://github.com/FFmpeg/FFmpeg.git 946fcce07b6dcd0331c8cc609192aeff5e1924f8
 checkout_source x264 https://code.videolan.org/videolan/x264.git b35605ace3ddf7c1a5d67a2eb553f034aef41d55
 checkout_source zimg https://github.com/sekrit-twc/zimg.git f819b14e8f39d1282400b0d9543e8ef73c1b2bbd
-git -C build/zimg submodule update --init --depth 1 graphengine
+git -C build/zimg submodule update --init --recursive --depth 1
 git -C build/zimg submodule status >> "$OUT/corresponding-source/REVISIONS.txt"
 checkout_source zlib https://github.com/madler/zlib.git 51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf
 # The pinned dav1d revision below is resolved from the upstream 1.5.2 release.
