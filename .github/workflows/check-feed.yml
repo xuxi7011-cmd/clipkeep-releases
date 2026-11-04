@@ -1,0 +1,74 @@
+name: Check published Windows update
+on:
+  workflow_dispatch:
+    inputs:
+      previous:
+        description: Previously published Windows tag
+        type: string
+        required: true
+      target:
+        description: Expected published stable tag
+        type: string
+        required: true
+permissions:
+  contents: read
+jobs:
+  download:
+    runs-on: windows-2022
+    timeout-minutes: 12
+    steps:
+      - name: Exercise the old installed app against the public update feed
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIOUS: ${{ inputs.previous }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          foreach ($tag in @($env:PREVIOUS,$env:TARGET)) { if ($tag -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Invalid release tag' } }
+          $name = 'ClipKeep-Setup-' + $env:PREVIOUS.Substring(1) + '-x64.exe'
+          gh release download $env:PREVIOUS -R $env:GITHUB_REPOSITORY -p $name -D old
+          if ($LASTEXITCODE -ne 0) { throw 'Previous installer unavailable' }
+          $dest = Join-Path $env:LOCALAPPDATA 'Programs\ClipKeep-Feed-Check'
+          $install = Start-Process "old/$name" -ArgumentList @('/S', "/D=$dest") -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw 'Previous version install failed' }
+          $targetName = 'ClipKeep-Setup-' + $env:TARGET.Substring(1) + '-x64.exe'
+          $assets = gh release view $env:TARGET -R $env:GITHUB_REPOSITORY --json assets | ConvertFrom-Json
+          $digest = ($assets.assets | Where-Object name -eq $targetName).digest
+          if ($digest -cnotmatch '^sha256:[0-9a-f]{64}$') { throw 'Missing target digest' }
+          $env:GH_TOKEN = ''
+          $proc = Start-Process "$dest\ClipKeep.exe" -ArgumentList '--remote-debugging-address=127.0.0.1','--remote-debugging-port=19222' -PassThru
+          try {
+            @'
+          const wait = ms => new Promise(r=>setTimeout(r,ms))
+          async function main(){
+            let page
+            for(let i=0;i<90&&!page;i++){
+              try{page=(await (await fetch('http://127.0.0.1:19222/json/list')).json()).find(p=>p.type==='page' && p.url.includes('index.html'))}catch{}
+              if(!page)await wait(1000)
+            }
+            if(!page)throw Error('Installed window did not open')
+            const ws=new WebSocket(page.webSocketDebuggerUrl)
+            await new Promise((resolve,reject)=>{ws.onopen=resolve;ws.onerror=reject})
+            let seq=0
+            async function action(name){
+              const id=++seq
+              const reply=new Promise((resolve,reject)=>{ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.id===id){if(m.error||m.result.exceptionDetails)reject(Error(JSON.stringify(m)));else resolve(m.result.result.value)}}})
+              ws.send(JSON.stringify({id,method:'Runtime.evaluate',params:{expression:'window.clip.update('+JSON.stringify(name)+')',awaitPromise:true,returnByValue:true}}))
+              return reply
+            }
+            try{
+              let state=await action('check')
+              for(let i=0;i<60 && state.phase==='checking';i++){await wait(500);state=await action('state')}
+              if('v'+state.currentVersion!==process.env.PREVIOUS||'v'+state.version!==process.env.TARGET||state.phase!=='available')throw Error(JSON.stringify(state))
+              state=await action('download')
+              if(state.phase!=='ready')throw Error(JSON.stringify(state))
+              console.log('Installed '+state.currentVersion+' detected and downloaded '+state.version)
+            }finally{ws.close()}
+          }
+          main().catch(e=>{console.error(e);process.exit(1)})
+          '@ | Set-Content verify.cjs
+            node --experimental-websocket verify.cjs
+            if ($LASTEXITCODE -ne 0) { throw 'Update client failed' }
+            $file = Get-ChildItem $env:LOCALAPPDATA -Filter $targetName -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (!$file -or ('sha256:' + (Get-FileHash $file.FullName).Hash.ToLower()) -cne $digest) { throw 'Downloaded installer checksum mismatch' }
+          } finally { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
