@@ -5,9 +5,17 @@ on:
       tag:
         description: Release tag to validate
         required: true
+      publish_update:
+        description: Promote this verified stable draft to the Windows update feed
+        required: false
+        type: boolean
+        default: false
+concurrency:
+  group: clipkeep-windows-release
+  cancel-in-progress: false
 permissions:
   # GitHub only exposes draft release assets to tokens with push access.
-  # This workflow only downloads; it never publishes or modifies a release.
+  # Publishing is explicitly enabled for a staged stable update.
   contents: write
 jobs:
   install:
@@ -59,3 +67,32 @@ jobs:
             installed-probe.json
             electron-version.txt
           retention-days: 30
+
+      - name: Promote the verified draft to Latest
+        if: success() && inputs.publish_update
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        shell: pwsh
+        run: |
+          $draft = gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --json tagName,isDraft,isPrerelease,assets | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or !$draft.isDraft -or $draft.isPrerelease -or $draft.tagName -cne $env:RELEASE_TAG) { throw 'Expected a stable draft' }
+          $latest = gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" --jq .tag_name
+          if ($LASTEXITCODE -ne 0 -or [version]$latest.TrimStart('v') -ge [version]$env:RELEASE_TAG.Substring(1)) { throw 'Refusing to replace an equal or newer version' }
+          $exe = Get-ChildItem package -Filter '*-x64.exe' | Select-Object -First 1
+          $sums = @{}
+          foreach ($line in Get-Content package/SHA256SUMS.txt) {
+            if ($line -cnotmatch '^([a-f0-9]{64})  ([^/\\]+)$') { throw 'Invalid checksum entry' }
+            $sums[$Matches[2]] = $Matches[1]
+          }
+          foreach ($name in @($exe.Name, ($exe.Name + '.blockmap'), 'latest.yml', 'THIRD-PARTY-NOTICES.md')) {
+            if (!$sums.ContainsKey($name)) { throw "Missing $name" }
+          }
+          if (!($sums.Keys -like 'ClipKeep-FFmpeg-Windows-Corresponding-Source-*.tar.xz')) { throw 'Missing corresponding source' }
+          if ($draft.assets.Count -ne ($sums.Count + 1)) { throw 'Unexpected asset list' }
+          $sums['SHA256SUMS.txt'] = (Get-FileHash package/SHA256SUMS.txt).Hash.ToLower()
+          foreach ($asset in $draft.assets) {
+            if (!$sums.ContainsKey($asset.name) -or $asset.digest -cne ("sha256:" + $sums[$asset.name])) { throw "Asset changed: $($asset.name)" }
+          }
+          gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Promotion failed' }
